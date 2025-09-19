@@ -1,0 +1,317 @@
+---
+- name: Установка Chef Workstation и необходимых инструментов
+  hosts: all
+  become: true
+
+  vars:
+    ruby_version: "3.2.3"
+    chef_pkg_url: "https://packages.chef.io/files/stable/chef-workstation/25.5.1084/ubuntu/22.04/chef-workstation_25.5.1084-1_amd64.deb"
+    chef_pkg_file: "/tmp/chef-workstation.deb"
+    chef_pkg_url: "https://packages.chef.io/files/stable/chef-workstation/25.5.1084/ubuntu/22.04/chef-workstation_25.5.1084-1_amd64.deb"
+    chef_pkg_file: "/tmp/chef-workstation.deb"
+    cookbook_name: "hello"
+    chef_server_pkg: "chef-server-core_15.10.33-1_amd64.deb"
+    chef_server_url: "https://packages.chef.io/files/stable/chef-server/15.10.33/ubuntu/20.04/{{ chef_server_pkg }}"
+    chef_pkg_path: "/tmp/{{ chef_server_pkg }}"
+    chef_admin_user: "admin"
+    chef_admin_first: "Admin"
+    chef_admin_last: "User"
+    chef_admin_email: "admin@example.com"
+    chef_admin_pass: "SuperSecretPassword"
+    chef_org: "myorg"
+    chef_org_full: "My Organization"
+    chef_server_pkg_url: "https://packages.chef.io/files/stable/chef-server/15.10.33/ubuntu/20.04/chef-server-core_15.10.33-1_amd64.deb"
+    chef_server_pkg: "/tmp/chef-server-core_15.10.33-1_amd64.deb"
+    chef_admin_user: "admin"
+    chef_admin_pass: "SuperSecretPassword"
+    chef_org: "myorg"
+    chef_org_full: "My Organization"
+    workstation_user: "mehanic"
+    workstation_home: "/home/mehanic"
+    pg_user: "opscode-pgsql"
+    pg_password: "supersecurepassword"
+    pg_db: "opscode-pgsql"
+    pg_hba_conf: "/var/opt/opscode/postgresql/13/data/pg_hba.conf"
+
+  tasks:
+    - name: Установка зависимостей
+      apt:
+        name:
+          - gnupg2
+          - curl
+          - wget
+          - build-essential
+        state: present
+        update_cache: yes
+
+    - name: Установка RVM
+      shell: |
+        gpg --keyserver hkp://keyserver.ubuntu.com --recv-keys 409B6B1796C275462A1703113804BB82D39DC0E3 \
+        7D2BAF1CF37B13E2069D6956105BD0E739499BDB
+        curl -sSL https://get.rvm.io | bash -s stable
+      args:
+        creates: /usr/local/rvm/bin/rvm
+
+    - name: Загружаем окружение RVM
+      shell: source /etc/profile.d/rvm.sh
+      args:
+        executable: /bin/bash
+
+    - name: Установка Ruby через RVM
+      shell: |
+        source /etc/profile.d/rvm.sh
+        rvm install "{{ ruby_version }}"
+        rvm --default use "{{ ruby_version }}"
+      args:
+        creates: "/usr/local/rvm/rubies/ruby-{{ ruby_version }}"
+
+    - name: Установка chef-cli и kitchen-docker через gem
+      shell: |
+        source /etc/profile.d/rvm.sh
+        gem install chef-cli
+        gem install kitchen-docker
+      environment:
+        GEM_HOME: "/usr/local/rvm/gems/ruby-{{ ruby_version }}"
+        GEM_PATH: "/usr/local/rvm/gems/ruby-{{ ruby_version }}"
+
+    - name: Скачивание Chef Workstation
+      get_url:
+        url: "{{ chef_pkg_url }}"
+        dest: "{{ chef_pkg_file }}"
+
+    - name: Установка Chef Workstation
+      apt:
+        deb: "{{ chef_pkg_file }}"
+
+    - name: Добавляем knife wrapper-скрипт
+      copy:
+        dest: /usr/local/bin/knife
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          env -i PATH=/opt/chef-workstation/embedded/bin:/usr/bin:/bin \
+          GEM_HOME= GEM_PATH= knife "$@"
+    tasks:
+    - name: Установить зависимости
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+        state: present
+        update_cache: yes
+
+    - name: Скачать пакет Chef Workstation
+      get_url:
+        url: "{{ chef_pkg_url }}"
+        dest: "{{ chef_pkg_file }}"
+
+    - name: Установить Chef Workstation
+      apt:
+        deb: "{{ chef_pkg_file }}"
+
+    - name: Очистить старые chef gems
+      file:
+        path: "{{ ansible_env.HOME }}/.chef/gem"
+        state: absent
+
+    - name: Сгенерировать cookbook
+      command: >
+        env -i HOME="{{ ansible_env.HOME }}"
+        PATH="/opt/chef-workstation/bin:/opt/chef-workstation/embedded/bin:/usr/bin:/bin"
+        chef generate cookbook {{ cookbook_name }}
+      args:
+        chdir: "{{ ansible_env.HOME }}"
+
+    - name: Установить knife-supermarket через chef gem
+      command: >
+        env -i HOME="{{ ansible_env.HOME }}"
+        PATH="/opt/chef-workstation/bin:/opt/chef-workstation/embedded/bin:/usr/bin:/bin"
+        chef gem install knife-supermarket
+
+    - name: Установить зависимости
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+          - lsof
+        state: present
+        update_cache: yes
+
+    - name: Скачать Chef Server пакет
+      get_url:
+        url: "{{ chef_server_url }}"
+        dest: "{{ chef_pkg_path }}"
+        mode: '0644'
+
+    - name: Установить Chef Server
+      apt:
+        deb: "{{ chef_pkg_path }}"
+
+    - name: Запустить chef-server-ctl reconfigure
+      command: chef-server-ctl reconfigure
+      args:
+        creates: /var/opt/opscode
+
+    - name: Создать администратора
+      command: >
+        chef-server-ctl user-create {{ chef_admin_user }}
+        {{ chef_admin_first }} {{ chef_admin_last }}
+        {{ chef_admin_email }} {{ chef_admin_pass }}
+        --filename /etc/chef/{{ chef_admin_user }}.pem
+      args:
+        creates: "/etc/chef/{{ chef_admin_user }}.pem"
+
+    - name: Создать организацию
+      command: >
+        chef-server-ctl org-create {{ chef_org }} "{{ chef_org_full }}"
+        --association_user {{ chef_admin_user }}
+        --filename /etc/chef/{{ chef_org }}-validator.pem
+      args:
+        creates: "/etc/chef/{{ chef_org }}-validator.pem"
+
+    - name: Перезапустить Chef Server сервисы
+      command: chef-server-ctl restart
+    - name: Установить зависимости
+      apt:
+        name: [curl, wget, git, lsof]
+        state: present
+        update_cache: yes
+
+    - name: Скачиваем Chef Server
+      get_url:
+        url: "{{ chef_server_pkg_url }}"
+        dest: "{{ chef_server_pkg }}"
+        mode: '0644'
+
+    - name: Установить Chef Server
+      apt:
+        deb: "{{ chef_server_pkg }}"
+
+    - name: Настроить Chef Server
+      command: chef-server-ctl reconfigure
+      args:
+        creates: /var/opt/opscode
+
+    - name: Создать администратора
+      command: >
+        chef-server-ctl user-create {{ chef_admin_user }}
+        Admin User {{ chef_admin_user }}@example.com
+        {{ chef_admin_pass }}
+        --filename /etc/chef/{{ chef_admin_user }}.pem
+      args:
+        creates: "/etc/chef/{{ chef_admin_user }}.pem"
+
+    - name: Создать организацию
+      command: >
+        chef-server-ctl org-create {{ chef_org }} "{{ chef_org_full }}"
+        --association_user {{ chef_admin_user }}
+        --filename /etc/chef/{{ chef_org }}-validator.pem
+      args:
+        creates: "/etc/chef/{{ chef_org }}-validator.pem"
+
+    - name: Перезапустить Chef Server
+      command: chef-server-ctl restart
+
+- name: Настройка Workstation и cookbook
+  hosts: chef_workstations
+  become: true
+  vars:
+    workstation_user: "mehanic"
+    workstation_home: "/home/mehanic"
+    cookbook_name: "hello"
+
+  tasks:
+    - name: Установить Chef Workstation
+      apt:
+        deb: "/tmp/chef-workstation.deb"
+      ignore_errors: yes
+
+    - name: Создать каталог для chef
+      file:
+        path: "{{ workstation_home }}/chef-repo/cookbooks"
+        state: directory
+        owner: "{{ workstation_user }}"
+        group: "{{ workstation_user }}"
+        mode: '0755'
+        recurse: yes
+
+    - name: Сгенерировать cookbook
+      command: chef generate cookbook {{ cookbook_name }}
+      args:
+        chdir: "{{ workstation_home }}/chef-repo/cookbooks"
+      become_user: "{{ workstation_user }}"
+      creates: "{{ workstation_home }}/chef-repo/cookbooks/{{ cookbook_name }}"
+
+    - name: Создать knife.rb
+      copy:
+        dest: "{{ workstation_home }}/.chef/knife.rb"
+        content: |
+          current_dir = File.dirname(__FILE__)
+          log_level                :info
+          log_location             STDOUT
+          node_name                "{{ chef_admin_user }}"
+          client_key               "{{ workstation_home }}/.chef/{{ chef_admin_user }}.pem"
+          chef_server_url          "https://{{ ansible_host }}/organizations/{{ chef_org }}"
+          cookbook_path            ["{{ workstation_home }}/chef-repo/cookbooks"]
+        owner: "{{ workstation_user }}"
+        group: "{{ workstation_user }}"
+        mode: '0600'
+
+    - name: Копировать ключи администратора и валидатора
+      copy:
+        src: "/etc/chef/{{ item }}"
+        dest: "{{ workstation_home }}/.chef/{{ item }}"
+        owner: "{{ workstation_user }}"
+        group: "{{ workstation_user }}"
+        mode: '0600'
+      loop:
+        - "{{ chef_admin_user }}.pem"
+        - "{{ chef_org }}-validator.pem"
+    - name: Установить PostgreSQL (если ещё не установлен)
+      apt:
+        name: postgresql
+        state: present
+        update_cache: yes
+
+    - name: Убедиться, что PostgreSQL запущен
+      service:
+        name: postgresql
+        state: started
+        enabled: true
+
+    - name: Создать пользователя PostgreSQL для Chef
+      postgresql_user:
+        name: "{{ pg_user }}"
+        password: "{{ pg_password }}"
+        role_attr_flags: "SUPERUSER,CREATEDB,CREATEROLE"
+      become_user: postgres
+
+    - name: Создать базу данных для Chef
+      postgresql_db:
+        name: "{{ pg_db }}"
+        owner: "{{ pg_user }}"
+        encoding: "SQL_ASCII"
+      become_user: postgres
+
+    - name: Обновить pg_hba.conf для безопасного доступа
+      blockinfile:
+        path: "{{ pg_hba_conf }}"
+        block: |
+          # Chef Server user access
+          local   all             {{ pg_user }}                                md5
+          host    all             {{ pg_user }}         127.0.0.1/32           md5
+          host    all             {{ pg_user }}         ::1/128                md5
+      notify:
+        - Перезапустить PostgreSQL
+
+  handlers:
+    - name: Перезапустить PostgreSQL
+      service:
+        name: postgresql
+        state: restarted
+
+      
+
+    
